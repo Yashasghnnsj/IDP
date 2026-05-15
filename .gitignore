@@ -32,4 +32,3 @@ ios/*.xcodeproj/xcuserdata/
 
 # Typescript
 *.tsbuildinfo
-node_modules
