@@ -5,9 +5,8 @@ const config: CapacitorConfig = {
   appName: 'AcuSound',
   webDir: 'dist',
   server: {
-    url: 'http://localhost:5173',
-    cleartext: true,
     androidScheme: 'https',
+    cleartext: true,
   },
 };
 
