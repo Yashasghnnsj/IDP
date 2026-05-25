@@ -1,8 +1,6 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export type DiagnosisRecord = {
+export type DiagnosisResult = {
   id: string;
   date: string;
   disease: string;
@@ -12,18 +10,13 @@ export type DiagnosisRecord = {
 };
 
 type HealthState = {
-  records: DiagnosisRecord[];
-  addRecord: (record: DiagnosisRecord) => void;
+  history: DiagnosisResult[];
+  addResult: (r: DiagnosisResult) => void;
   clearHistory: () => void;
 };
 
-export const useHealthStore = create<HealthState>()(
-  persist(
-    (set) => ({
-      records: [],
-      addRecord: (record) => set((state) => ({ records: [record, ...state.records] })),
-      clearHistory: () => set({ records: [] }),
-    }),
-    { name: 'health-store', storage: { getItem: AsyncStorage.getItem, setItem: AsyncStorage.setItem, removeItem: AsyncStorage.removeItem } }
-  )
-);
+export const useHealthStore = create<HealthState>((set) => ({
+  history: [],
+  addResult: (r) => set((s) => ({ history: [r, ...s.history] })),
+  clearHistory: () => set({ history: [] }),
+}));
