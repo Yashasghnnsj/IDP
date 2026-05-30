@@ -41,3 +41,17 @@ dist/
 .env.local
 .env.*.local
 
+# Python
+__pycache__/
+*.pyc
+
+# Temp files
+temp_audio_upload.webm
+test_audio.wav
+
+# Large model files
+acusound_final_model.pth
+acusound_final_model.pth.zip
+acusound_final_model/
+checkpoints/
+

@@ -29,21 +29,14 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
   externalSignal?.addEventListener('abort', abortFromExternalSignal, { once: true });
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   const { signal: _signal, ...fetchOptions } = options;
-  let raceTimeoutId = 0;
 
   try {
-    const request = fetch(url, {
+    return await fetch(url, {
       ...fetchOptions,
       signal: controller.signal,
     });
-    const timeout = new Promise<never>((_, reject) => {
-      raceTimeoutId = window.setTimeout(() => reject(new Error('Request timed out')), timeoutMs);
-    });
-    return await Promise.race([request, timeout]);
   } finally {
-    controller.abort();
     window.clearTimeout(timeoutId);
-    window.clearTimeout(raceTimeoutId);
     externalSignal?.removeEventListener('abort', abortFromExternalSignal);
   }
 }
@@ -103,21 +96,28 @@ export default function AIProcessing() {
 
         let serverReachable = false;
         if (!IS_NATIVE_APP || API_BASE_URL) {
-          // Try health check up to 2 times — first request through Vite HTTPS proxy
-          // can be slow on first load. 8s timeout per attempt.
+          // Simple health check — avoid fetchWithTimeout because its finally{abort()}
+          // kills the response body stream before .json() can read it.
           for (let attempt = 0; attempt < 2 && !serverReachable; attempt++) {
+            const hc = new AbortController();
+            const hcTimeout = window.setTimeout(() => hc.abort(), 8000);
             try {
-              const healthResp = await fetchWithTimeout(apiUrl('/api/health'), {
+              console.info(`[AcuSound] Health check attempt ${attempt + 1}...`);
+              const healthResp = await fetch(apiUrl('/api/health'), {
                 method: 'GET',
                 headers: { Accept: 'application/json' },
-              }, 8000);
-              if (healthResp.ok && isJsonResponse(healthResp)) {
+                signal: hc.signal,
+              });
+              window.clearTimeout(hcTimeout);
+              if (healthResp.ok) {
                 const healthData = await healthResp.json();
+                console.info(`[AcuSound] Health response:`, healthData);
                 serverReachable = healthData?.status === 'healthy';
               } else {
                 console.warn(`[AcuSound] Health check attempt ${attempt + 1}: HTTP ${healthResp.status}`);
               }
             } catch (err) {
+              window.clearTimeout(hcTimeout);
               console.warn(`[AcuSound] Health check attempt ${attempt + 1} failed:`, err);
             }
           }
