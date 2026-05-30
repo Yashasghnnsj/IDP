@@ -9,7 +9,7 @@ export default defineConfig({
     basicSsl(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['**/*.{js,css,html,ico,png,svg,json,webmanifest}'],
+      includeAssets: ['**/*.{js,mjs,css,html,ico,png,svg,json,webmanifest,bin,weights,onnx,wasm}'],
       manifest: {
         short_name: 'AcuSound',
         name: 'AcuSound – AI Respiratory Detection',
@@ -23,10 +23,11 @@ export default defineConfig({
         background_color: '#F5F7FA',
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,json}'],
+        globPatterns: ['**/*.{js,mjs,css,html,ico,png,svg,json,bin,onnx,wasm}'],
+        maximumFileSizeToCacheInBytes: 50 * 1024 * 1024,
         runtimeCaching: [
           {
-            urlPattern: /\/assets\/models\/.*\.(json|bin)/,
+            urlPattern: /\/assets\/(models\/.*\.onnx|ort\/.*\.(mjs|wasm)|ort-.*\.wasm)/,
             handler: 'CacheFirst',
             options: {
               cacheName: 'ai-models',
@@ -40,6 +41,12 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     https: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+      },
+    },
   },
 });
-

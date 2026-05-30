@@ -4,16 +4,19 @@ import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { WaveformVisualizer } from '../components/recording/WaveformVisualizer';
 import { Card } from '../components/common/Card';
 import { HiMicrophone, HiStop } from 'react-icons/hi2';
+import { useHealthStore } from '../store/healthStore';
 
 export default function Recording() {
   const nav = useNavigate();
   const { isRecording, decibel, duration, start, stop, error } = useAudioRecorder();
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const setAudioBlob = useHealthStore((s) => s.setAudioBlob);
 
   const handleToggle = async () => {
     if (isRecording) {
       const blob = await stop();
       setAudioUrl(URL.createObjectURL(blob));
+      setAudioBlob(blob);
     } else {
       await start();
     }
