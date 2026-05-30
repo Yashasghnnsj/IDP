@@ -21,7 +21,7 @@ function apiUrl(path: string) {
   return `${API_BASE_URL}${path}`;
 }
 
-async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 3000) {
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 8000) {
   const controller = new AbortController();
   const externalSignal = options.signal;
   const abortFromExternalSignal = () => controller.abort();
@@ -103,18 +103,25 @@ export default function AIProcessing() {
 
         let serverReachable = false;
         if (!IS_NATIVE_APP || API_BASE_URL) {
-          try {
-            const healthResp = await fetchWithTimeout(apiUrl('/api/health'), {
-              method: 'GET',
-              headers: { Accept: 'application/json' },
-            });
-            if (healthResp.ok && isJsonResponse(healthResp)) {
-              const healthData = await healthResp.json();
-              serverReachable = healthData?.status === 'healthy';
+          // Try health check up to 2 times — first request through Vite HTTPS proxy
+          // can be slow on first load. 8s timeout per attempt.
+          for (let attempt = 0; attempt < 2 && !serverReachable; attempt++) {
+            try {
+              const healthResp = await fetchWithTimeout(apiUrl('/api/health'), {
+                method: 'GET',
+                headers: { Accept: 'application/json' },
+              }, 8000);
+              if (healthResp.ok && isJsonResponse(healthResp)) {
+                const healthData = await healthResp.json();
+                serverReachable = healthData?.status === 'healthy';
+              } else {
+                console.warn(`[AcuSound] Health check attempt ${attempt + 1}: HTTP ${healthResp.status}`);
+              }
+            } catch (err) {
+              console.warn(`[AcuSound] Health check attempt ${attempt + 1} failed:`, err);
             }
-          } catch {
-            serverReachable = false;
           }
+          console.info(`[AcuSound] Server reachable: ${serverReachable}`);
         }
 
         if (cancelled) return;
