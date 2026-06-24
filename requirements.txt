@@ -1,0 +1,33 @@
+# AcuSound Backend Dependencies
+# Install with: pip install -r requirements.txt
+
+# Web framework
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# HTTP client (for OpenRouter calls)
+httpx==0.27.0
+
+# File upload support for FastAPI
+python-multipart==0.0.9
+
+# ML / Deep Learning
+torch==2.2.2
+torchvision==0.17.2
+timm==0.9.16
+
+# Audio processing
+librosa==0.10.2
+soundfile==0.12.1
+
+# Image processing
+Pillow==10.3.0
+
+# Visualization
+matplotlib==3.8.4
+
+# GradCAM for explainability
+grad-cam==1.5.0
+
+# Numerical computing
+numpy==1.26.4

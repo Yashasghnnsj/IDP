@@ -36,18 +36,37 @@ dist/
 # Typescript
 *.tsbuildinfo
 
-# Environment variables
+# Environment variables – NEVER commit these, they contain API keys
 .env
 .env.local
 .env.*.local
+.env.production
+# Keep .env.example (no real values) committed as a template
 
 # Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
 
-# Temp files
-temp_audio_upload.webm
-test_audio.wav
+# Virtual environments
+venv/
+.venv/
+env/
+.env_py/
+
+# Pip / build artifacts
+*.egg-info/
+dist-python/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Temp files (created by backend during audio processing)
+temp_audio_upload.*
+test_audio.*
 
 # Large model files
 acusound_final_model.pth
