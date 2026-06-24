@@ -1,5 +1,8 @@
 # AcuSound Backend Dependencies
-# Install with: pip install -r requirements.txt
+# NOTE: torch and torchvision are installed separately via the Render Build Command
+# using the CPU-only index to avoid the full CUDA bundle (~4x smaller).
+# Build command:
+#   pip install -r requirements.txt && pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # Web framework
 fastapi
@@ -11,9 +14,7 @@ httpx
 # File upload support for FastAPI
 python-multipart
 
-# ML / Deep Learning (unpinned — let pip resolve for current Python version)
-torch
-torchvision
+# Model architecture
 timm
 
 # Audio processing
