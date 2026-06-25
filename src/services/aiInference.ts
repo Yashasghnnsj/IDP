@@ -305,7 +305,7 @@ Our AI classifier detected features suggestive of **${predictedClass}** with **$
 * **Suggested Action:** 
   * Rest in a well-ventilated room.
   * Practice slow, deep belly breathing.
-  * Keep track of your symptoms (cough, temperature, shortness of breath).
+  * Keep track of your symptoms.
 
 *AcuSound AI is not a substitute for professional medical diagnosis. Please consult a doctor for personalized medical advice.*`;
 }

@@ -4,13 +4,14 @@ import re
 import base64
 import logging
 from typing import Dict, List
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import torch
 import timm
 import librosa
 import numpy as np
+import joblib
 from PIL import Image
 import matplotlib
 matplotlib.use('Agg')
@@ -23,9 +24,11 @@ import httpx
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AcuSoundAPI")
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # 1. Load Environment Variables manually from .env
 openrouter_api_key = ""
-env_path = os.path.join(os.path.dirname(__file__), ".env")
+env_path = os.path.join(BASE_DIR, ".env")
 if os.path.exists(env_path):
     logger.info("Loading environment variables from .env file...")
     with open(env_path, "r", encoding="utf-8") as f:
@@ -59,7 +62,12 @@ app.add_middleware(
 
 # 3. Model Configuration & Loading
 CLASS_NAMES = ['Asthma', 'Bronchiectasis', 'Bronchiolitis', 'COPD', 'Healthy', 'LRTI', 'Pneumonia', 'URTI']
-MODEL_PATH = "acusound_final_model.pth"
+CLASSES_PATH = os.path.join(BASE_DIR, "acusound_final_model.classes.txt")
+if os.path.exists(CLASSES_PATH):
+    with open(CLASSES_PATH, "r") as f:
+        CLASS_NAMES = [line.strip() for line in f if line.strip()]
+
+MODEL_PATH = os.path.join(BASE_DIR, "acusound_final_model.pth")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 logger.info(f"Using device: {DEVICE}")
@@ -88,6 +96,38 @@ except Exception as e:
     logger.error(f"Error loading PyTorch model: {e}")
     model = None
     cam = None
+
+# 3b. Load Traditional ML Models (SVM, KNN, RF)
+TRADITIONAL_MODELS_DIR = os.path.join(BASE_DIR, "checkpoints", "traditional")
+traditional_models = {}
+traditional_scaler = None
+traditional_encoder = None
+
+if os.path.exists(TRADITIONAL_MODELS_DIR):
+    logger.info(f"Loading traditional ML models from {TRADITIONAL_MODELS_DIR}...")
+    for name in ["svm", "knn", "rf"]:
+        path = os.path.join(TRADITIONAL_MODELS_DIR, f"{name}.joblib")
+        if os.path.exists(path):
+            try:
+                traditional_models[name] = joblib.load(path)
+                logger.info(f"  Loaded {name}")
+            except Exception as e:
+                logger.error(f"  Failed to load {name}: {e}")
+
+    scaler_path = os.path.join(TRADITIONAL_MODELS_DIR, "scaler.joblib")
+    if os.path.exists(scaler_path):
+        traditional_scaler = joblib.load(scaler_path)
+        logger.info("  Loaded scaler")
+
+    encoder_path = os.path.join(TRADITIONAL_MODELS_DIR, "label_encoder.joblib")
+    if os.path.exists(encoder_path):
+        traditional_encoder = joblib.load(encoder_path)
+        logger.info("  Loaded label_encoder")
+
+    if traditional_models:
+        logger.info(f"Traditional ML models available: {list(traditional_models.keys())}")
+else:
+    logger.warning("No traditional ML models found. Run 'python data/train_traditional.py' first.")
 
 # 4. Audio Preprocessing Utilities
 def remove_silence(audio, top_db=20):
@@ -159,10 +199,36 @@ async def health_check():
         "classes": CLASS_NAMES
     }
 
+@app.get("/api/models")
+async def list_models():
+    available = [{"id": "efficientnet", "name": "Deep Learning (EfficientNet)", "type": "deep_learning", "available": model is not None}]
+    
+    traditional_info = {
+        "svm": "Support Vector Machine (SVM)",
+        "knn": "K-Nearest Neighbors (KNN)",
+        "rf": "Random Forest"
+    }
+    for mid, mname in traditional_info.items():
+        available.append({
+            "id": mid,
+            "name": mname,
+            "type": "traditional",
+            "available": mid in traditional_models
+        })
+    
+    return {"models": available}
+
+def extract_mfcc_features(audio, sr=16000, n_mfcc=40):
+    """Extract MFCC features matching train_traditional.py preprocessing."""
+    mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=n_mfcc)
+    return np.mean(mfcc.T, axis=0)
+
 @app.post("/api/analyze")
-async def analyze_audio(audio: UploadFile = File(...)):
-    if model is None:
+async def analyze_audio(audio: UploadFile = File(...), model_type: str = Form("efficientnet")):
+    if model is None and model_type == "efficientnet":
         raise HTTPException(status_code=500, detail="PyTorch model is not loaded on the server.")
+    if model_type in ("svm", "knn", "rf") and model_type not in traditional_models:
+        raise HTTPException(status_code=500, detail=f"Traditional model '{model_type}' is not loaded. Run 'python data/train_traditional.py' first.")
     
     import time
     start_time = time.time()
@@ -202,88 +268,159 @@ async def analyze_audio(audio: UploadFile = File(...)):
 
         # Preprocess
         y_audio = remove_silence(y_audio, top_db=20)
-        mel_3ch, mel_single = audio_to_logmel_inference(y_audio, sr=16000)
         
         preprocess_time = time.time()
         logger.info(f"Time to preprocess audio: {preprocess_time - load_time:.2f}s")
-        
-        # Build tensor for model input (HWC -> BCHW)
-        tensor = torch.tensor(mel_3ch.transpose(2, 0, 1), dtype=torch.float32).unsqueeze(0).to(DEVICE)
-        
-        # 6. PyTorch Model Inference
-        with torch.no_grad():
-            logits = model(tensor)
-            probs = torch.softmax(logits, dim=1)[0]
-            
-        pred_idx = torch.argmax(probs).item()
-        pred_class = CLASS_NAMES[pred_idx]
-        confidence = float(probs[pred_idx])
-        
-        inference_time = time.time()
-        logger.info(f"Time for model inference: {inference_time - preprocess_time:.2f}s")
-        logger.info(f"Prediction: {pred_class} with {confidence:.2%} confidence")
 
-        # 7. GradCAM Visual Generation (Optional - Generate in background)
-        heatmap_b64 = ""
-        mel_b64 = ""
-        try:
-            # Run GradCAM
-            grayscale_cam = cam(input_tensor=tensor)[0]
-            
-            # Normalize spectrogram for RGB overlay
-            rgb_mel = np.stack([(mel_single - mel_single.min()) / (mel_single.max() - mel_single.min() + 1e-8)] * 3, axis=-1)
-            overlay = show_cam_on_image(rgb_mel.astype(np.float32), grayscale_cam, use_rgb=True)
-            
-            # Convert overlay to Base64 PNG
-            buf_heat = io.BytesIO()
-            Image.fromarray(overlay).save(buf_heat, format='PNG')
-            heatmap_b64 = base64.b64encode(buf_heat.getvalue()).decode('utf-8')
-            
-            # Convert standard Spectrogram to Base64 PNG (for side-by-side or clean view)
-            fig, ax = plt.subplots(figsize=(4, 4))
-            ax.imshow(mel_single, aspect='auto', origin='lower', cmap='magma')
-            ax.axis('off')
-            buf_mel = io.BytesIO()
-            plt.savefig(buf_mel, format='png', bbox_inches='tight', pad_inches=0)
-            plt.close(fig)
-            mel_b64 = base64.b64encode(buf_mel.getvalue()).decode('utf-8')
-            
-            gradcam_time = time.time()
-            logger.info(f"Time for GradCAM generation: {gradcam_time - inference_time:.2f}s")
-        except Exception as cam_err:
-            logger.error(f"Error generating GradCAM heatmap: {cam_err}")
-            gradcam_time = time.time()
+        inference_start = time.time()
 
-        # 8. Generate Fallback Explanation (Fast Local Generation)
+        if model_type == "efficientnet":
+            # --- Deep Learning (EfficientNet) path ---
+            mel_3ch, mel_single = audio_to_logmel_inference(y_audio, sr=16000)
+            tensor = torch.tensor(mel_3ch.transpose(2, 0, 1), dtype=torch.float32).unsqueeze(0).to(DEVICE)
+            
+            with torch.no_grad():
+                logits = model(tensor)
+                probs = torch.softmax(logits, dim=1)[0]
+            
+            pred_idx = torch.argmax(probs).item()
+            pred_class = CLASS_NAMES[pred_idx]
+            confidence = float(probs[pred_idx])
+            
+            logger.info(f"EfficientNet: {pred_class} with {confidence:.2%} confidence")
+
+            # GradCAM
+            heatmap_b64 = ""
+            mel_b64 = ""
+            try:
+                grayscale_cam = cam(input_tensor=tensor)[0]
+                rgb_mel = np.stack([(mel_single - mel_single.min()) / (mel_single.max() - mel_single.min() + 1e-8)] * 3, axis=-1)
+                overlay = show_cam_on_image(rgb_mel.astype(np.float32), grayscale_cam, use_rgb=True)
+                buf_heat = io.BytesIO()
+                Image.fromarray(overlay).save(buf_heat, format='PNG')
+                heatmap_b64 = base64.b64encode(buf_heat.getvalue()).decode('utf-8')
+                
+                fig, ax = plt.subplots(figsize=(4, 4))
+                ax.imshow(mel_single, aspect='auto', origin='lower', cmap='magma')
+                ax.axis('off')
+                buf_mel = io.BytesIO()
+                plt.savefig(buf_mel, format='png', bbox_inches='tight', pad_inches=0)
+                plt.close(fig)
+                mel_b64 = base64.b64encode(buf_mel.getvalue()).decode('utf-8')
+                
+                logger.info(f"GradCAM generated in {time.time() - inference_start:.2f}s")
+            except Exception as cam_err:
+                logger.error(f"GradCAM error: {cam_err}")
+
+            all_probs = {CLASS_NAMES[i]: float(probs[i]) for i in range(len(CLASS_NAMES))}
+
+        else:
+            # --- Traditional ML path (svm, knn, rf) ---
+            mfcc_feat = extract_mfcc_features(y_audio, sr=16000)
+            feat_scaled = traditional_scaler.transform([mfcc_feat])
+            
+            model_obj = traditional_models[model_type]
+            raw_pred = model_obj.predict(feat_scaled)[0]
+            pred_class = traditional_encoder.inverse_transform([raw_pred])[0]
+            pred_class = str(pred_class)
+            
+            if hasattr(model_obj, "predict_proba"):
+                raw_probs = model_obj.predict_proba(feat_scaled)[0]
+                confidence = float(max(raw_probs))
+                all_probs = {}
+                for i, p in enumerate(raw_probs):
+                    cls_name = str(traditional_encoder.inverse_transform([i])[0])
+                    all_probs[cls_name] = float(p)
+            else:
+                confidence = 0.85
+                all_probs = {pred_class: confidence}
+            
+            heatmap_b64 = ""
+            mel_b64 = ""
+            
+            logger.info(f"{model_type}: {pred_class} with {confidence:.2%} confidence")
+
+        logger.info(f"Total inference time: {time.time() - inference_start:.2f}s")
+
+        # Generate explanation
         risk = get_risk_level(pred_class)
         desc = get_disease_description(pred_class)
+        
+        model_label_map = {"efficientnet": "Deep Learning (EfficientNet)", "svm": "SVM", "knn": "KNN", "rf": "Random Forest"}
+        model_label = model_label_map.get(model_type, model_type)
+        
+        patterns_text = "The visual GradCAM heatmap highlights the key spectral regions in your breathing sound where our neural network identified abnormal wheezing, crackles, or breathing signatures." if model_type == "efficientnet" else "The model analyzed acoustic features from your breathing sound to identify patterns consistent with this classification."
+        
         explanation = f"""### Respiratory Sound Analysis Result
 
 Our AI classifier detected features suggestive of **{pred_class}** with **{confidence * 100:.1f}% confidence** (classified as **{risk} Risk**).
 
+**Model used:** {model_label}
+
 * **About this finding:** {desc}
-* **Highlighted patterns:** The visual GradCAM heatmap highlights the key spectral regions in your breathing sound where our neural network identified abnormal wheezing, crackles, or breathing signatures.
+* **Highlighted patterns:** {patterns_text}
 * **Suggested Action:** 
   * Rest in a well-ventilated room.
   * Practice slow, deep belly breathing.
-  * Keep track of your symptoms (cough, temperature, shortness of breath).
+  * Keep track of your symptoms.
 
 *AcuSound AI is not a substitute for professional medical diagnosis. Please consult a doctor for personalized medical advice.*"""
-        
-        # Return response immediately - don't wait for LLM
+
+        # Call OpenRouter (only for EfficientNet with mel_b64)
+        if model_type == "efficientnet" and openrouter_api_key and mel_b64:
+            try:
+                logger.info("Calling OpenRouter Vision Model for detailed report...")
+                prompt = f"""You are a professional medical AI assistant.
+A patient has uploaded a respiratory sound which was analyzed.
+Predicted Disease: {pred_class}
+Confidence: {confidence * 100:.1f}%
+Risk Level: {risk}
+
+Please analyze the provided mel-spectrogram image and generate a detailed and professional respiratory analysis report. 
+Highlight the important findings based on the spectrogram, relate them to the predicted disease ({pred_class}), and offer general wellness advice. 
+Keep it concise, use markdown formatting, and always include a medical disclaimer at the end."""
+                
+                payload = {
+                    "model": "meta-llama/llama-3.2-11b-vision-instruct:free",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{mel_b64}"}}
+                            ]
+                        }
+                    ]
+                }
+                
+                headers = {
+                    "Authorization": f"Bearer {openrouter_api_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                with httpx.Client(timeout=30.0) as client:
+                    resp = client.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers)
+                    resp.raise_for_status()
+                    result_json = resp.json()
+                    explanation = result_json["choices"][0]["message"]["content"]
+                    logger.info("OpenRouter response generated successfully.")
+                    
+            except Exception as llm_err:
+                logger.error(f"OpenRouter VLM failed: {llm_err}. Using fallback.")
+
         total_time = time.time()
         logger.info(f"Total API response time: {total_time - start_time:.2f}s")
         
-        # Return full payload to client PWA
         return {
             "predicted_class": pred_class,
             "confidence": confidence,
-            "risk": get_risk_level(pred_class),
-            "description": get_disease_description(pred_class),
-            "all_probabilities": {CLASS_NAMES[i]: float(probs[i]) for i in range(len(CLASS_NAMES))},
+            "risk": risk,
+            "description": desc,
+            "all_probabilities": all_probs,
             "heatmap_b64": heatmap_b64,
             "mel_b64": mel_b64,
-            "llm_explanation": explanation
+            "llm_explanation": explanation,
+            "model_used": model_type
         }
 
     except Exception as e:

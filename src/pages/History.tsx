@@ -8,11 +8,19 @@ const riskColors = { Low: 'text-green-600 bg-green-100', Moderate: 'text-yellow-
 export default function History() {
   const nav = useNavigate();
   const history = useHealthStore((s) => s.history);
+  const setCurrentResult = useHealthStore((s) => s.setCurrentResult);
 
   const mockHistory = history.length > 0 ? history : [
     { id: '1', date: new Date().toISOString(), disease: 'Healthy', confidence: 92, risk: 'Low' as const },
     { id: '2', date: new Date(Date.now() - 86400000).toISOString(), disease: 'Healthy', confidence: 88, risk: 'Low' as const },
   ];
+
+  const handleCardClick = (scan: any) => {
+    if (scan.fullReport) {
+      setCurrentResult(scan.fullReport);
+      nav('/result');
+    }
+  };
 
   return (
     <div>
@@ -23,7 +31,11 @@ export default function History() {
 
       <div className="space-y-4 -mt-6 relative z-10">
         {mockHistory.map((scan) => (
-          <Card key={scan.id} className="flex justify-between items-center">
+          <Card 
+            key={scan.id} 
+            className={`flex justify-between items-center ${scan.fullReport ? 'cursor-pointer hover:border-blue-300 transition-colors' : ''}`}
+            onClick={() => handleCardClick(scan)}
+          >
             <div>
               <h3 className="font-semibold">{scan.disease}</h3>
               <p className="text-xs text-gray-400">{new Date(scan.date).toLocaleDateString()}</p>

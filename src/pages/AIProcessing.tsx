@@ -62,6 +62,7 @@ export default function AIProcessing() {
   const [debugInfo, setDebugInfo] = useState<string>('Starting analysis...');
   const [mode, setMode] = useState<'server' | 'local' | 'checking'>('checking');
   const audioBlob = useHealthStore((s) => s.audioBlob);
+  const selectedModel = useHealthStore((s) => s.selectedModel);
   const setCurrentResult = useHealthStore((s) => s.setCurrentResult);
   const addResult = useHealthStore((s) => s.addResult);
 
@@ -155,6 +156,7 @@ export default function AIProcessing() {
           disease: data.predicted_class,
           confidence: Math.round(data.confidence * 100),
           risk: data.risk,
+          fullReport: data,
         });
 
         setProgress(100);
@@ -189,8 +191,9 @@ export default function AIProcessing() {
 
     const formData = new FormData();
     formData.append('audio', wavBlob, 'recording.wav');
+    formData.append('model_type', selectedModel);
 
-    setDebugInfo('Waiting for AI analysis...');
+    setDebugInfo(`Running ${selectedModel} analysis...`);
     const response = await fetchWithTimeout(apiUrl('/api/analyze'), {
       method: 'POST',
       headers: { Accept: 'application/json' },
@@ -257,7 +260,7 @@ export default function AIProcessing() {
       <div id="lottie-brain" className="w-36 h-36" />
       <h2 className="text-xl font-bold mt-6">Analyzing Your Breath</h2>
       <p className="text-gray-500 text-sm mt-2">
-        {mode === 'local' ? 'On-device neural network processing' : 'AI neural network processing audio patterns'}
+        {mode === 'local' ? 'On-device neural network processing' : `AI processing with ${selectedModel}`}
       </p>
       {mode === 'local' && (
         <span className="mt-1 px-2 py-0.5 bg-yellow-100 text-yellow-700 text-xs rounded-full font-medium">

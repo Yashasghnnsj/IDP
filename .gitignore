@@ -68,9 +68,16 @@ build/
 temp_audio_upload.*
 test_audio.*
 
-# Large model files
+# Large model files & training data
 acusound_final_model.pth
 acusound_final_model.pth.zip
 acusound_final_model/
 checkpoints/
+logs/
+training.log
 
+# Dataset (large audio files — not for version control)
+data/
+
+# Python notebook outputs
+*.ipynb_checkpoints/

@@ -10,6 +10,7 @@ export type DiagnosisResult = {
   confidence: number;
   risk: RiskLevel;
   audioUri?: string;
+  fullReport?: AnalyzeResponse;
 };
 
 function loadHistory(): DiagnosisResult[] {
@@ -33,8 +34,10 @@ type HealthState = {
 
   currentResult: AnalyzeResponse | null;
   audioBlob: Blob | null;
+  selectedModel: string;
   setCurrentResult: (r: AnalyzeResponse | null) => void;
   setAudioBlob: (b: Blob | null) => void;
+  setSelectedModel: (m: string) => void;
 };
 
 export const useHealthStore = create<HealthState>((set) => ({
@@ -52,6 +55,8 @@ export const useHealthStore = create<HealthState>((set) => ({
 
   currentResult: null,
   audioBlob: null,
+  selectedModel: 'efficientnet',
   setCurrentResult: (r) => set({ currentResult: r }),
   setAudioBlob: (b) => set({ audioBlob: b }),
+  setSelectedModel: (m) => set({ selectedModel: m }),
 }));

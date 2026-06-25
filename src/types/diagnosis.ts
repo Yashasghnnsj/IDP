@@ -9,4 +9,5 @@ export type AnalyzeResponse = {
   heatmap_b64: string;
   mel_b64: string;
   llm_explanation: string;
+  model_used: string;
 };

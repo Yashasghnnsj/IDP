@@ -10,8 +10,23 @@ import numpy as np
 import librosa
 from pathlib import Path
 from data_handler import remove_silence, audio_to_logmel
-from trainer import ModelTrainer
 from config import Config
+
+
+def load_class_names(model_path, checkpoint=None):
+    """Load class names saved beside a trained model."""
+    if isinstance(checkpoint, dict) and "class_names" in checkpoint:
+        return checkpoint["class_names"]
+
+    class_file = Path(model_path).with_suffix(".classes.txt")
+    if class_file.exists():
+        return [
+            line.strip()
+            for line in class_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    return Config.CLASS_NAMES
 
 
 def predict_audio(audio_path, model_path, config=None):
@@ -36,26 +51,24 @@ def predict_audio(audio_path, model_path, config=None):
     audio = remove_silence(audio, top_db=config.TOP_DB)
     
     # Convert to spectrogram
-    spec = audio_to_logmel(audio, sr=config.SAMPLE_RATE)
+    spec = audio_to_logmel(audio, sr=config.SAMPLE_RATE, config=config)
     
     # Prepare tensor
     x = torch.tensor(spec.transpose(2, 0, 1), dtype=torch.float32)
     x = x.unsqueeze(0).to(device)  # Add batch dimension
     
-    # Load model
-    trainer = ModelTrainer(config)
-    
-    # Build dummy model to load weights
     import timm
+
+    checkpoint = torch.load(model_path, map_location=device)
+    class_names = load_class_names(model_path, checkpoint=checkpoint)
     model = timm.create_model(
         config.MODEL_NAME,
         pretrained=False,
-        num_classes=4  # Default, will adjust if needed
+        num_classes=len(class_names)
     )
-    
-    # Load weights
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint)
+
+    state_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
     
@@ -66,12 +79,14 @@ def predict_audio(audio_path, model_path, config=None):
         predicted_idx = torch.argmax(logits, dim=1).item()
         confidence = probabilities[0, predicted_idx].item()
     
-    return predicted_idx, confidence, probabilities[0].cpu().numpy()
+    return class_names, predicted_idx, confidence, probabilities[0].cpu().numpy()
 
 
 def main(args):
     audio_path = Path(args.audio)
     model_path = Path(args.model)
+    config = Config()
+    config.DEVICE = args.device
     
     if not audio_path.exists():
         print(f"Error: Audio file not found: {audio_path}")
@@ -85,11 +100,10 @@ def main(args):
     print(f"Model: {model_path}")
     print(f"Processing...")
     
-    class_names = ["Asthma", "Bronchitis", "Bronchiectasis", "Pneumonia"]  # Update with actual classes
-    
-    predicted_idx, confidence, probabilities = predict_audio(
+    class_names, predicted_idx, confidence, probabilities = predict_audio(
         audio_path,
-        model_path
+        model_path,
+        config=config,
     )
     
     print("\n" + "="*60)

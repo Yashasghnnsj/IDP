@@ -3,14 +3,23 @@ import { useNavigate } from 'react-router-dom';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { WaveformVisualizer } from '../components/recording/WaveformVisualizer';
 import { Card } from '../components/common/Card';
-import { HiMicrophone, HiStop } from 'react-icons/hi2';
+import { HiMicrophone, HiStop, HiSparkles } from 'react-icons/hi2';
 import { useHealthStore } from '../store/healthStore';
+
+const MODELS = [
+  { id: 'efficientnet', name: 'Deep Learning (EfficientNet)', icon: '🧠', desc: 'Neural network with GradCAM visualization' },
+  { id: 'svm', name: 'Support Vector Machine (SVM)', icon: '📊', desc: 'Traditional ML classifier' },
+  { id: 'knn', name: 'K-Nearest Neighbors (KNN)', icon: '📈', desc: 'Traditional ML classifier' },
+  { id: 'rf', name: 'Random Forest', icon: '🌲', desc: 'Traditional ML classifier' },
+];
 
 export default function Recording() {
   const nav = useNavigate();
   const { isRecording, decibel, duration, start, stop, error } = useAudioRecorder();
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const setAudioBlob = useHealthStore((s) => s.setAudioBlob);
+  const selectedModel = useHealthStore((s) => s.selectedModel);
+  const setSelectedModel = useHealthStore((s) => s.setSelectedModel);
 
   const handleToggle = async () => {
     if (isRecording) {
@@ -31,7 +40,34 @@ export default function Recording() {
   return (
     <div className="flex flex-col items-center pt-8">
       <h1 className="text-xl font-bold mb-2">Record Breath</h1>
-      <p className="text-gray-500 text-sm mb-8">Hold the microphone close to your mouth</p>
+      <p className="text-gray-500 text-sm mb-6">Hold the microphone close to your mouth</p>
+
+      {/* Model Selector */}
+      <div className="w-full mb-6">
+        <div className="flex items-center gap-2 mb-3">
+          <HiSparkles className="w-4 h-4 text-blue-500" />
+          <span className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Analysis Model</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {MODELS.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => setSelectedModel(m.id)}
+              className={`p-3 rounded-xl text-left transition-all active:scale-95 border ${
+                selectedModel === m.id
+                  ? 'bg-blue-50 border-blue-300 shadow-sm'
+                  : 'bg-white/50 border-gray-200/60 hover:border-gray-300'
+              }`}
+            >
+              <span className="text-lg">{m.icon}</span>
+              <p className={`text-xs font-semibold mt-1 ${selectedModel === m.id ? 'text-blue-700' : 'text-gray-700'}`}>
+                {m.name}
+              </p>
+              <p className="text-[10px] text-gray-400 mt-0.5">{m.desc}</p>
+            </button>
+          ))}
+        </div>
+      </div>
 
       <Card className="w-full text-center mb-8">
         <WaveformVisualizer isActive={isRecording} decibel={decibel} />
