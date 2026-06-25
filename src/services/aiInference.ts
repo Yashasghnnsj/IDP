@@ -1,7 +1,8 @@
 import * as ort from 'onnxruntime-web';
 import type { AnalyzeResponse, RiskLevel } from '../types/diagnosis';
 
-const CLASS_NAMES = ['Asthma', 'Bronchiectasis', 'Bronchiolitis', 'COPD', 'Healthy', 'LRTI', 'Pneumonia', 'URTI'];
+// Classes matching the trained model — update this if you retrain with different classes
+const CLASS_NAMES = ['Bronchiectasis', 'Bronchiolitis', 'COPD', 'Healthy'];
 
 const SR = 16000;
 const N_MELS = 224;
@@ -291,8 +292,8 @@ const DISEASE_DESCRIPTIONS: Record<string, string> = {
 
 function getRiskLevel(predClass: string): RiskLevel {
   if (predClass === 'Healthy') return 'Low';
-  if (['Asthma', 'URTI', 'Bronchiolitis'].includes(predClass)) return 'Moderate';
-  return 'High';
+  if (predClass === 'Bronchiolitis') return 'Moderate';
+  return 'High'; // Bronchiectasis, COPD
 }
 
 function generateExplanation(predictedClass: string, confidence: number, risk: RiskLevel, desc: string): string {
@@ -327,6 +328,7 @@ function buildAnalyzeResponse(
     heatmap_b64: '',
     mel_b64: '',
     llm_explanation: generateExplanation(predictedClass, confidence, risk, description),
+    model_used: 'local-onnx',
   };
 }
 
@@ -356,6 +358,7 @@ export async function classifyAudioLightweight(audioBlob: Blob): Promise<Analyze
     const zcr = zeroCrossings / sampleCount;
     const durationSeconds = audioBuffer.duration;
 
+    // Lightweight heuristics using only the 4 trained classes
     let predictedClass = 'Healthy';
     let confidence = 0.72;
 
@@ -363,11 +366,11 @@ export async function classifyAudioLightweight(audioBlob: Blob): Promise<Analyze
       predictedClass = 'Healthy';
       confidence = 0.58;
     } else if (zcr > 0.18 && rms > 0.035) {
-      predictedClass = 'URTI';
-      confidence = 0.68;
+      predictedClass = 'COPD';
+      confidence = 0.65;
     } else if (rms > 0.08) {
-      predictedClass = 'Asthma';
-      confidence = 0.66;
+      predictedClass = 'Bronchiectasis';
+      confidence = 0.63;
     } else if (zcr > 0.12) {
       predictedClass = 'Bronchiolitis';
       confidence = 0.62;

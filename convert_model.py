@@ -26,24 +26,40 @@ def main():
     onnx_path = os.path.join(OUTPUT_DIR, "model.onnx")
 
     logger.info(f"Loading model weights from {MODEL_PATH}...")
-    model = timm.create_model("efficientnet_b0", pretrained=False, num_classes=8)
+
+    # Read class count dynamically from the classes file
+    classes_txt = MODEL_PATH.replace(".pth", ".classes.txt")
+    if os.path.exists(classes_txt):
+        with open(classes_txt) as f:
+            class_names = [line.strip() for line in f if line.strip()]
+        num_classes = len(class_names)
+        logger.info(f"Detected {num_classes} classes from {classes_txt}: {class_names}")
+    else:
+        num_classes = 4  # default for current 4-class model
+        logger.warning(f"Classes file not found at {classes_txt}, defaulting to {num_classes} classes")
+
+    model = timm.create_model("efficientnet_b0", pretrained=False, num_classes=num_classes)
     state = torch.load(MODEL_PATH, map_location="cpu", weights_only=True)
     model.load_state_dict(state)
     model.eval()
 
     dummy_input = torch.randn(1, 3, 224, 224)
 
-    logger.info("Exporting to ONNX...")
+    logger.info("Exporting to ONNX (legacy exporter, opset 12)...")
 
-    # Export with torch.onnx.export
+    # Force legacy TorchScript-based exporter to avoid torch 2.x dynamo issues
+    import torch.onnx
     torch.onnx.export(
         model,
         dummy_input,
         onnx_path,
+        export_params=True,
+        opset_version=12,
+        do_constant_folding=True,
         input_names=["input"],
         output_names=["output"],
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-        opset_version=17,
+        dynamo=False,
     )
 
     # Reload and save as a single self-contained file (embed weights inline)

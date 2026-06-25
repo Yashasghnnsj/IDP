@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { WaveformVisualizer } from '../components/recording/WaveformVisualizer';
 import { Card } from '../components/common/Card';
-import { HiMicrophone, HiStop, HiSparkles } from 'react-icons/hi2';
+import { HiMicrophone, HiStop, HiSparkles, HiArrowUpTray } from 'react-icons/hi2';
 import { useHealthStore } from '../store/healthStore';
 
 const MODELS = [
@@ -13,20 +13,67 @@ const MODELS = [
   { id: 'rf', name: 'Random Forest', icon: '🌲', desc: 'Traditional ML classifier' },
 ];
 
+const ACCEPTED_TYPES = [
+  'audio/wav', 'audio/wave', 'audio/x-wav',
+  'audio/mpeg', 'audio/mp3',
+  'audio/ogg', 'audio/webm',
+  'audio/mp4', 'audio/x-m4a', 'audio/aac',
+  'audio/flac',
+];
+
+const ACCEPTED_EXTENSIONS = '.wav,.mp3,.ogg,.webm,.m4a,.aac,.flac';
+
 export default function Recording() {
   const nav = useNavigate();
   const { isRecording, decibel, duration, start, stop, error } = useAudioRecorder();
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [source, setSource] = useState<'record' | 'upload' | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const setAudioBlob = useHealthStore((s) => s.setAudioBlob);
   const selectedModel = useHealthStore((s) => s.selectedModel);
   const setSelectedModel = useHealthStore((s) => s.setSelectedModel);
 
+  const handleFile = useCallback((file: File) => {
+    if (!file) return;
+    const blob = new Blob([file], { type: file.type || 'audio/wav' });
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+    const url = URL.createObjectURL(blob);
+    setAudioUrl(url);
+    setAudioBlob(blob);
+    setSource('upload');
+  }, [audioUrl, setAudioBlob]);
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleFile(file);
+    e.target.value = '';
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleFile(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => setIsDragging(false);
+
   const handleToggle = async () => {
     if (isRecording) {
       const blob = await stop();
-      setAudioUrl(URL.createObjectURL(blob));
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      const url = URL.createObjectURL(blob);
+      setAudioUrl(url);
       setAudioBlob(blob);
+      setSource('record');
     } else {
+      setSource('record');
       await start();
     }
   };
@@ -69,7 +116,8 @@ export default function Recording() {
         </div>
       </div>
 
-      <Card className="w-full text-center mb-8">
+      {/* Record Section */}
+      <Card className="w-full text-center mb-4">
         <WaveformVisualizer isActive={isRecording} decibel={decibel} />
         <div className="text-center mt-4">
           <div className="text-3xl font-bold text-blue-600">{fmt(duration)}</div>
@@ -97,8 +145,59 @@ export default function Recording() {
       </button>
       <p className="text-sm text-gray-500 mt-3">{isRecording ? 'Tap to stop' : 'Tap to record'}</p>
 
+      {/* Divider */}
+      <div className="flex items-center gap-3 w-full my-6">
+        <div className="flex-1 h-px bg-gray-200" />
+        <span className="text-xs font-medium text-gray-400">OR</span>
+        <div className="flex-1 h-px bg-gray-200" />
+      </div>
+
+      {/* Upload Section */}
+      <div
+        className={`w-full border-2 border-dashed rounded-2xl p-6 text-center transition-all cursor-pointer ${
+          isDragging
+            ? 'border-blue-400 bg-blue-50'
+            : 'border-gray-300 bg-white/50 hover:border-blue-300 hover:bg-blue-50/50'
+        }`}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onClick={() => fileInputRef.current?.click()}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={ACCEPTED_EXTENSIONS}
+          onChange={handleFileInput}
+          className="hidden"
+        />
+        <div className="flex flex-col items-center gap-2">
+          <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${
+            isDragging ? 'bg-blue-100' : 'bg-gray-100'
+          }`}>
+            <HiArrowUpTray className={`w-6 h-6 ${isDragging ? 'text-blue-500' : 'text-gray-400'}`} />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-gray-700">
+              {isDragging ? 'Drop audio file here' : 'Upload audio file'}
+            </p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              WAV, MP3, OGG, WebM, M4A, AAC, FLAC
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Audio Player & Analyze */}
       {audioUrl && (
         <div className="mt-6 w-full flex flex-col items-center gap-3">
+          <div className="w-full flex items-center gap-2 px-1">
+            <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+              source === 'record' ? 'bg-green-100 text-green-600' : 'bg-purple-100 text-purple-600'
+            }`}>
+              {source === 'record' ? 'Recorded' : 'Uploaded'}
+            </span>
+          </div>
           <audio src={audioUrl} controls className="w-full rounded-xl" />
           <button onClick={handleAnalyze}
             className="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold shadow-lg hover:bg-blue-700 transition">

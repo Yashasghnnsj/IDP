@@ -3,6 +3,7 @@ import io
 import re
 import base64
 import logging
+import tempfile
 from typing import Dict, List
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -242,25 +243,25 @@ async def analyze_audio(audio: UploadFile = File(...), model_type: str = Form("e
         
         # Load audio using librosa (handles wav, webm, mp3 using audioread / soundfile fallbacks)
         try:
-            # We save the file bytes to a temporary file because soundfile/audioread sometimes 
+            # We save the file bytes to a temporary file because soundfile/audioread sometimes
             # requires a real file path to read compressed containers (like WebM) on Windows
-            temp_filename = "temp_audio_upload.wav"
+            ext = "wav"
             if audio.filename and "." in audio.filename:
                 ext = audio.filename.split(".")[-1]
-                temp_filename = f"temp_audio_upload.{ext}"
-                
-            with open(temp_filename, "wb") as f:
-                f.write(audio_bytes)
-                
-            # Load audio using librosa
-            y_audio, sr = librosa.load(temp_filename, sr=16000)
-            
-            # Clean up temp file
-            if os.path.exists(temp_filename):
-                os.remove(temp_filename)
+
+            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+
+            y_audio, sr = librosa.load(tmp_path, sr=16000)
+
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
                 
         except Exception as e:
             logger.warning(f"Failed to read file directly, attempting direct BytesIO load: {e}")
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.remove(tmp_path)
             y_audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000)
         
         load_time = time.time()
@@ -335,8 +336,21 @@ async def analyze_audio(audio: UploadFile = File(...), model_type: str = Form("e
                 confidence = 0.85
                 all_probs = {pred_class: confidence}
             
+            # Generate mel spectrogram for all traditional models too
             heatmap_b64 = ""
             mel_b64 = ""
+            try:
+                _, mel_single = audio_to_logmel_inference(y_audio, sr=16000)
+                fig, ax = plt.subplots(figsize=(4, 4))
+                ax.imshow(mel_single, aspect='auto', origin='lower', cmap='magma')
+                ax.axis('off')
+                buf_mel = io.BytesIO()
+                plt.savefig(buf_mel, format='png', bbox_inches='tight', pad_inches=0)
+                plt.close(fig)
+                mel_b64 = base64.b64encode(buf_mel.getvalue()).decode('utf-8')
+                logger.info(f"Mel spectrogram generated for {model_type}")
+            except Exception as mel_err:
+                logger.error(f"Mel spectrogram error for {model_type}: {mel_err}")
             
             logger.info(f"{model_type}: {pred_class} with {confidence:.2%} confidence")
 
@@ -366,10 +380,10 @@ Our AI classifier detected features suggestive of **{pred_class}** with **{confi
 
 *AcuSound AI is not a substitute for professional medical diagnosis. Please consult a doctor for personalized medical advice.*"""
 
-        # Call OpenRouter (only for EfficientNet with mel_b64)
-        if model_type == "efficientnet" and openrouter_api_key and mel_b64:
+        # Call OpenRouter (for all models when mel_b64 is available)
+        if openrouter_api_key and mel_b64:
             try:
-                logger.info("Calling OpenRouter Vision Model for detailed report...")
+                logger.info("Calling OpenRouter VLM for detailed report...")
                 prompt = f"""You are a professional medical AI assistant.
 A patient has uploaded a respiratory sound which was analyzed.
 Predicted Disease: {pred_class}
@@ -380,30 +394,43 @@ Please analyze the provided mel-spectrogram image and generate a detailed and pr
 Highlight the important findings based on the spectrogram, relate them to the predicted disease ({pred_class}), and offer general wellness advice. 
 Keep it concise, use markdown formatting, and always include a medical disclaimer at the end."""
                 
-                payload = {
-                    "model": "meta-llama/llama-3.2-11b-vision-instruct:free",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{mel_b64}"}}
-                            ]
-                        }
-                    ]
-                }
+                vlm_models = [
+                    "meta-llama/llama-3.2-11b-vision-instruct:free",
+                    "meta-llama/llama-3.3-70b-instruct:free",
+                    "google/gemma-4-31b-it:free",
+                ]
                 
                 headers = {
                     "Authorization": f"Bearer {openrouter_api_key}",
                     "Content-Type": "application/json"
                 }
                 
-                with httpx.Client(timeout=30.0) as client:
-                    resp = client.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers)
-                    resp.raise_for_status()
-                    result_json = resp.json()
-                    explanation = result_json["choices"][0]["message"]["content"]
-                    logger.info("OpenRouter response generated successfully.")
+                for vlm_model in vlm_models:
+                    try:
+                        payload = {
+                            "model": vlm_model,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": prompt},
+                                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{mel_b64}"}}
+                                    ]
+                                }
+                            ]
+                        }
+                        
+                        with httpx.Client(timeout=30.0) as client:
+                            resp = client.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers)
+                            resp.raise_for_status()
+                            result_json = resp.json()
+                            explanation = result_json["choices"][0]["message"]["content"]
+                            logger.info(f"OpenRouter VLM ({vlm_model}) response generated successfully.")
+                            break
+                            
+                    except Exception as vlm_err:
+                        logger.warning(f"VLM model {vlm_model} failed: {vlm_err}. Trying next...")
+                        continue
                     
             except Exception as llm_err:
                 logger.error(f"OpenRouter VLM failed: {llm_err}. Using fallback.")

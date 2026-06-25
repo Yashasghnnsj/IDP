@@ -17,8 +17,21 @@ import {
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const IS_NATIVE_APP = Capacitor.isNativePlatform();
 
+const SERVER_URLS = [
+  'http://localhost:8000',
+  'http://127.0.0.1:8000',
+  API_BASE_URL,
+  'http://192.168.0.107:8000',
+  'http://10.0.2.2:8000',
+].filter(Boolean);
+
+// Deduplicate while preserving order
+const uniqueUrls = [...new Set(SERVER_URLS)];
+
+let resolvedBaseUrl = uniqueUrls[0] || API_BASE_URL;
+
 function apiUrl(path: string) {
-  return `${API_BASE_URL}${path}`;
+  return `${resolvedBaseUrl}${path}`;
 }
 
 async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 8000) {
@@ -93,37 +106,39 @@ export default function AIProcessing() {
 
     const runAnalysis = async () => {
       try {
-        setDebugInfo(IS_NATIVE_APP && !API_BASE_URL ? 'Preparing on-device analysis...' : 'Checking for AI server...');
+        setDebugInfo('Searching for AI server...');
 
         let serverReachable = false;
-        if (!IS_NATIVE_APP || API_BASE_URL) {
-          // Simple health check — avoid fetchWithTimeout because its finally{abort()}
-          // kills the response body stream before .json() can read it.
+        for (const baseUrl of uniqueUrls) {
+          if (serverReachable) break;
           for (let attempt = 0; attempt < 2 && !serverReachable; attempt++) {
             const hc = new AbortController();
-            const hcTimeout = window.setTimeout(() => hc.abort(), 8000);
+            const hcTimeout = window.setTimeout(() => hc.abort(), 4000);
             try {
-              console.info(`[AcuSound] Health check attempt ${attempt + 1}...`);
-              const healthResp = await fetch(apiUrl('/api/health'), {
+              console.info(`[AcuSound] Health check ${baseUrl} attempt ${attempt + 1}...`);
+              const healthResp = await fetch(`${baseUrl}/api/health`, {
                 method: 'GET',
                 headers: { Accept: 'application/json' },
                 signal: hc.signal,
               });
               window.clearTimeout(hcTimeout);
               if (healthResp.ok) {
-                const healthData = await healthResp.json();
-                console.info(`[AcuSound] Health response:`, healthData);
-                serverReachable = healthData?.status === 'healthy';
-              } else {
-                console.warn(`[AcuSound] Health check attempt ${attempt + 1}: HTTP ${healthResp.status}`);
+                const contentType = healthResp.headers.get('content-type') || '';
+                if (contentType.includes('application/json')) {
+                  const healthData = await healthResp.json();
+                  if (healthData?.status === 'healthy') {
+                    serverReachable = true;
+                    resolvedBaseUrl = baseUrl;
+                    console.info(`[AcuSound] Server found at: ${baseUrl}`);
+                  }
+                }
               }
             } catch (err) {
               window.clearTimeout(hcTimeout);
-              console.warn(`[AcuSound] Health check attempt ${attempt + 1} failed:`, err);
             }
           }
-          console.info(`[AcuSound] Server reachable: ${serverReachable}`);
         }
+        console.info(`[AcuSound] Server reachable: ${serverReachable}, using: ${resolvedBaseUrl}`);
 
         if (cancelled) return;
 
@@ -187,36 +202,56 @@ export default function AIProcessing() {
 
   async function runServerAnalysis(signal: AbortSignal): Promise<AnalyzeResponse> {
     const wavBlob = await webmToWav(audioBlob!);
-    setDebugInfo('Uploading audio to server...');
 
-    const formData = new FormData();
-    formData.append('audio', wavBlob, 'recording.wav');
-    formData.append('model_type', selectedModel);
+    const fallbackModels = ['svm', 'knn', 'rf'].filter((m) => m !== selectedModel);
+    const modelsToTry = [selectedModel, ...fallbackModels];
 
-    setDebugInfo(`Running ${selectedModel} analysis...`);
-    const response = await fetchWithTimeout(apiUrl('/api/analyze'), {
-      method: 'POST',
-      headers: { Accept: 'application/json' },
-      body: formData,
-      signal,
-    }, 60000);
+    for (const modelType of modelsToTry) {
+      if (signal.aborted) throw new Error('Analysis cancelled');
 
-    if (!isJsonResponse(response)) {
-      const preview = await response.text().catch(() => '');
-      const trimmedPreview = preview.trim().slice(0, 80);
-      throw new Error(
-        trimmedPreview.startsWith('<!DOCTYPE') || trimmedPreview.startsWith('<html')
-          ? 'AI server endpoint returned the app page instead of JSON. Check the API server URL.'
-          : 'AI server returned a non-JSON response.'
-      );
+      const formData = new FormData();
+      formData.append('audio', wavBlob, 'recording.wav');
+      formData.append('model_type', modelType);
+
+      setDebugInfo(modelType === selectedModel
+        ? `Running ${modelType} analysis...`
+        : `${selectedModel} unavailable — trying ${modelType}...`);
+
+      try {
+        const response = await fetchWithTimeout(apiUrl('/api/analyze'), {
+          method: 'POST',
+          headers: { Accept: 'application/json' },
+          body: formData,
+          signal,
+        }, 60000);
+
+        if (!isJsonResponse(response)) {
+          const preview = await response.text().catch(() => '');
+          const trimmedPreview = preview.trim().slice(0, 80);
+          const msg = trimmedPreview.startsWith('<!DOCTYPE') || trimmedPreview.startsWith('<html')
+            ? 'AI server endpoint returned the app page instead of JSON. Check the API server URL.'
+            : 'AI server returned a non-JSON response.';
+          if (modelType === modelsToTry[modelsToTry.length - 1]) throw new Error(msg);
+          console.warn(`[AcuSound] ${modelType} failed: ${msg}, trying next model...`);
+          continue;
+        }
+
+        if (!response.ok) {
+          const errBody = await response.json().catch(() => ({}));
+          const msg = errBody.detail || `Server error: ${response.status}`;
+          if (modelType === modelsToTry[modelsToTry.length - 1]) throw new Error(msg);
+          console.warn(`[AcuSound] ${modelType} failed: ${msg}, trying next model...`);
+          continue;
+        }
+
+        return response.json();
+      } catch (err: any) {
+        if (modelType === modelsToTry[modelsToTry.length - 1]) throw err;
+        console.warn(`[AcuSound] ${modelType} request failed: ${err.message}, trying next model...`);
+      }
     }
 
-    if (!response.ok) {
-      const errBody = await response.json().catch(() => ({}));
-      throw new Error(errBody.detail || `Server error: ${response.status}`);
-    }
-
-    return response.json();
+    throw new Error('All server models failed. Please try again.');
   }
 
   async function runLocalAnalysis(): Promise<AnalyzeResponse> {

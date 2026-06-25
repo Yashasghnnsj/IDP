@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Capacitor } from '@capacitor/core';
 import { GradientHeader } from '../components/common/GradientHeader';
 import { Card } from '../components/common/Card';
 import { HiPhone, HiVideoCamera } from 'react-icons/hi2';
@@ -9,59 +10,80 @@ const doctors = [
   { name: 'Dr. Ananya Patel', spec: 'Respiratory Specialist', available: false },
 ];
 
+function getDistanceFromLatLonInKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+async function fetchNearbyHospitals(latitude: number, longitude: number) {
+  const query = `[out:json];node["amenity"~"hospital|clinic"](around:5000,${latitude},${longitude});out 5;`;
+  const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+  const data = await res.json();
+  return data.elements
+    .filter((el: any) => el.tags && el.tags.name)
+    .map((el: any) => ({
+      id: el.id,
+      name: el.tags.name,
+      distance: getDistanceFromLatLonInKm(latitude, longitude, el.lat, el.lon).toFixed(1) + ' km away',
+    }));
+}
+
 export default function DoctorConsultation() {
   const [hospitals, setHospitals] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [locationStatus, setLocationStatus] = useState<string>('Locating nearby facilities...');
 
   useEffect(() => {
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          try {
-            const { latitude, longitude } = position.coords;
-            const query = `[out:json];node["amenity"~"hospital|clinic"](around:5000,${latitude},${longitude});out 5;`;
-            const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
-            const data = await res.json();
-            
-            const fetchedHospitals = data.elements
-              .filter((el: any) => el.tags && el.tags.name)
-              .map((el: any) => ({
-                id: el.id,
-                name: el.tags.name,
-                distance: getDistanceFromLatLonInKm(latitude, longitude, el.lat, el.lon).toFixed(1) + ' km away',
-              }));
-            
-            setHospitals(fetchedHospitals);
-            setLocationStatus(fetchedHospitals.length > 0 ? 'Nearby Hospitals & Clinics' : 'No hospitals found nearby.');
-            setLoading(false);
-          } catch (err) {
-            setLocationStatus('Could not fetch nearby hospitals.');
-            setLoading(false);
-          }
-        },
-        (err) => {
-          setLocationStatus('Location access denied. Online doctors only.');
-          setLoading(false);
-        }
-      );
-    } else {
-      setLocationStatus('Geolocation is not supported by your browser.');
-      setLoading(false);
-    }
-  }, []);
+    let cancelled = false;
 
-  function getDistanceFromLatLonInKm(lat1: number, lon1: number, lat2: number, lon2: number) {
-    const R = 6371;
-    const dLat = (lat2-lat1) * (Math.PI/180);
-    const dLon = (lon2-lon1) * (Math.PI/180); 
-    const a = 
-      Math.sin(dLat/2) * Math.sin(dLat/2) +
-      Math.cos(lat1 * (Math.PI/180)) * Math.cos(lat2 * (Math.PI/180)) * 
-      Math.sin(dLon/2) * Math.sin(dLon/2); 
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
-    return R * c;
-  }
+    async function locate() {
+      if (!('geolocation' in navigator)) {
+        setLocationStatus('Geolocation is not supported by your browser.');
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 300000,
+          });
+        });
+
+        if (cancelled) return;
+        const { latitude, longitude } = pos.coords;
+        const fetched = await fetchNearbyHospitals(latitude, longitude);
+        if (cancelled) return;
+        setHospitals(fetched);
+        setLocationStatus(fetched.length > 0 ? 'Nearby Hospitals & Clinics' : 'No hospitals found nearby.');
+      } catch (err: any) {
+        if (cancelled) return;
+        if (err.code === 1) {
+          setLocationStatus('Location access denied. Showing online doctors only.');
+        } else if (err.code === 2) {
+          setLocationStatus('Location unavailable. Showing online doctors only.');
+        } else if (err.code === 3) {
+          setLocationStatus('Location request timed out. Showing online doctors only.');
+        } else {
+          setLocationStatus('Could not fetch nearby hospitals. Showing online doctors only.');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    locate();
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <div>
